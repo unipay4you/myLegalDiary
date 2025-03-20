@@ -1,84 +1,75 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:form_validator/form_validator.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/app_config.dart';
+import 'home_screen.dart';
+import 'login_screen.dart';
+import 'dart:async';
 
 class OTPVerificationScreen extends StatefulWidget {
   final String phoneNumber;
+  final String source; // 'login' or 'register'
 
-  const OTPVerificationScreen({super.key, required this.phoneNumber});
+  const OTPVerificationScreen({
+    super.key,
+    required this.phoneNumber,
+    required this.source,
+  });
 
   @override
   State<OTPVerificationScreen> createState() => _OTPVerificationScreenState();
 }
 
 class _OTPVerificationScreenState extends State<OTPVerificationScreen> {
-  final List<TextEditingController> _otpControllers = List.generate(
-    6,
-    (index) => TextEditingController(),
-  );
-  final List<FocusNode> _focusNodes = List.generate(6, (index) => FocusNode());
+  final _formKey = GlobalKey<FormState>();
+  final _otpController = TextEditingController();
   bool _isLoading = false;
-  String? _errorMessage;
-  final String apiBaseUrl = 'https://mylegaldiary.in/api';
+  bool _canResendOTP = true;
+  int _resendTimer = 30;
+
+  // Get API URL from config
+  String get apiBaseUrl => AppConfig.apiBaseUrl;
 
   @override
-  void dispose() {
-    for (var controller in _otpControllers) {
-      controller.dispose();
-    }
-    for (var node in _focusNodes) {
-      node.dispose();
-    }
-    super.dispose();
+  void initState() {
+    super.initState();
+    _startResendTimer();
   }
 
-  String get _otpCode {
-    return _otpControllers.map((controller) => controller.text).join();
-  }
-
-  void _onOtpDigitChanged(int index, String value) {
-    if (value.isNotEmpty && index < 5) {
-      _focusNodes[index + 1].requestFocus();
-    }
-  }
-
+  // Function to handle OTP verification
   Future<void> _verifyOtp() async {
-    final otp = _otpCode;
-
-    if (otp.length != 6) {
-      setState(() {
-        _errorMessage = 'Please enter a valid 6-digit OTP';
-      });
+    if (!_formKey.currentState!.validate()) {
       return;
     }
 
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
     });
 
     try {
-      // Get the stored tokens
       final prefs = await SharedPreferences.getInstance();
-      final accessToken = prefs.getString('access_token') ?? '';
+      final accessToken = prefs.getString('access_token');
 
-      // Create request body
-      final requestBody = {'phone_number': widget.phoneNumber, 'otp': otp};
+      if (accessToken == null) {
+        throw Exception('Access token not found');
+      }
 
-      // Log API call details
-      print('=== API CALL DETAILS ===');
-      print('API Endpoint: $apiBaseUrl/verify-otp');
-      print('Method: POST');
-      print(
-        'Headers: {"Content-Type": "application/json", "Authorization": "Bearer $accessToken"}',
-      );
+      final requestBody = {
+        'phone_number': widget.phoneNumber,
+        'otp': _otpController.text,
+      };
+
+      // Print request details for debugging
+      print('\n=== Verify OTP Request Details ===');
+      print('Request URL: $apiBaseUrl/otp-verify');
       print('Request Body: ${jsonEncode(requestBody)}');
-      print('========================');
+      print('===========================\n');
 
       final response = await http.post(
-        Uri.parse('$apiBaseUrl/verify-otp'),
+        Uri.parse('$apiBaseUrl/otp-verify'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $accessToken',
@@ -86,287 +77,400 @@ class _OTPVerificationScreenState extends State<OTPVerificationScreen> {
         body: jsonEncode(requestBody),
       );
 
-      // Log response details
-      print('=== API RESPONSE DETAILS ===');
-      print('Status Code: ${response.statusCode}');
+      // Print response details for debugging
+      print('\n=== Verify OTP Response Details ===');
+      print('Response Status Code: ${response.statusCode}');
       print('Response Body: ${response.body}');
-      print('============================');
+      print('===========================\n');
 
       setState(() {
         _isLoading = false;
       });
 
-      if (response.statusCode == 200) {
-        // OTP verification successful
+      try {
         final responseData = jsonDecode(response.body);
+        print('\n=== Parsed Response Data ===');
+        print('Response Data: $responseData');
+        print('=========================\n');
 
-        // Update tokens if provided in the response
-        if (responseData['access_token'] != null) {
-          await prefs.setString('access_token', responseData['access_token']);
-        }
-        if (responseData['refresh_token'] != null) {
-          await prefs.setString('refresh_token', responseData['refresh_token']);
-        }
+        final responseStatus =
+            responseData['status'] as int? ?? response.statusCode;
 
-        // Navigate to home screen or dashboard
-        if (!mounted) return;
-        // TODO: Replace with your home screen navigation
-        Navigator.of(
-          context,
-        ).pushNamedAndRemoveUntil('/home', (route) => false);
-      } else {
-        // OTP verification failed
-        final responseData = jsonDecode(response.body);
-
-        // Check if the response contains error field with specific field errors
-        if (responseData.containsKey('error') && responseData['error'] is Map) {
-          final errorMap = responseData['error'] as Map;
-          final errorMessages = <String>[];
-
-          // Process each field error
-          errorMap.forEach((field, errors) {
-            if (errors is List && errors.isNotEmpty) {
-              errorMessages.add(
-                '${field.toString().replaceAll('_', ' ')}: ${errors.first}',
-              );
-            } else if (errors is String) {
-              errorMessages.add(
-                '${field.toString().replaceAll('_', ' ')}: $errors',
-              );
-            }
-          });
-
-          // Join all error messages
-          final errorMessage = errorMessages.join('\n');
-
-          setState(() {
-            _errorMessage = errorMessage;
-          });
+        if (responseStatus == 200) {
+          if (!mounted) return;
+          await _showSuccessDialog();
         } else {
-          // Fallback to generic error message
-          setState(() {
-            _errorMessage =
-                responseData['message'] ??
-                'OTP verification failed. Please try again.';
-          });
+          if (!mounted) return;
+          await showDialog(
+            context: context,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                title: const Text('Verification Failed'),
+                content: Text(
+                  responseData['message'] ??
+                      'OTP verification failed. Please try again.',
+                ),
+                actions: <Widget>[
+                  TextButton(
+                    child: const Text('OK'),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                ],
+              );
+            },
+          );
         }
+      } catch (e) {
+        print('\n=== JSON Parsing Error ===');
+        print('Error parsing response: $e');
+        print('Raw response that failed to parse: ${response.body}');
+        print('=========================\n');
+
+        if (!mounted) return;
+        await showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Text('Error'),
+              content: const Text(
+                'Server response error. Please try again later.',
+              ),
+              actions: <Widget>[
+                TextButton(
+                  child: const Text('OK'),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                ),
+              ],
+            );
+          },
+        );
       }
     } catch (e) {
+      print('\n=== Network/Other Error ===');
       print('Error during OTP verification: $e');
+      print('=========================\n');
+
       setState(() {
         _isLoading = false;
-        _errorMessage = 'An error occurred. Please try again.';
       });
+
+      if (!mounted) return;
+      await showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: const Text('Error'),
+            content: const Text(
+              'Network error occurred. Please check your connection and try again.',
+            ),
+            actions: <Widget>[
+              TextButton(
+                child: const Text('OK'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+              ),
+            ],
+          );
+        },
+      );
     }
   }
 
+  // Function to handle resend OTP
   Future<void> _resendOtp() async {
+    if (!_canResendOTP) return;
+
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
     });
 
     try {
-      // Create request body
+      final prefs = await SharedPreferences.getInstance();
+      final accessToken = prefs.getString('access_token');
+
+      if (accessToken == null) {
+        throw Exception('Access token not found');
+      }
+
       final requestBody = {'phone_number': widget.phoneNumber};
 
-      // Log API call details
-      print('=== API CALL DETAILS ===');
-      print('API Endpoint: $apiBaseUrl/resend-otp');
-      print('Method: POST');
-      print('Headers: {"Content-Type": "application/json"}');
+      // Print request details for debugging
+      print('\n=== Resend OTP Request Details ===');
+      print('Request URL: $apiBaseUrl/otp-resend');
       print('Request Body: ${jsonEncode(requestBody)}');
-      print('========================');
+      print('===========================\n');
 
       final response = await http.post(
-        Uri.parse('$apiBaseUrl/resend-otp'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('$apiBaseUrl/otp-resend'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $accessToken',
+        },
         body: jsonEncode(requestBody),
       );
 
-      // Log response details
-      print('=== API RESPONSE DETAILS ===');
-      print('Status Code: ${response.statusCode}');
+      // Print response details for debugging
+      print('\n=== Resend OTP Response Details ===');
+      print('Response Status Code: ${response.statusCode}');
       print('Response Body: ${response.body}');
-      print('============================');
+      print('===========================\n');
 
       setState(() {
         _isLoading = false;
       });
 
-      if (response.statusCode == 200) {
-        // OTP resent successfully
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('OTP has been resent to your phone'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
-        // Failed to resend OTP
+      try {
         final responseData = jsonDecode(response.body);
+        print('\n=== Parsed Response Data ===');
+        print('Response Data: $responseData');
+        print('=========================\n');
 
-        // Check if the response contains error field with specific field errors
-        if (responseData.containsKey('error') && responseData['error'] is Map) {
-          final errorMap = responseData['error'] as Map;
-          final errorMessages = <String>[];
+        final responseStatus =
+            responseData['status'] as int? ?? response.statusCode;
 
-          // Process each field error
-          errorMap.forEach((field, errors) {
-            if (errors is List && errors.isNotEmpty) {
-              errorMessages.add(
-                '${field.toString().replaceAll('_', ' ')}: ${errors.first}',
-              );
-            } else if (errors is String) {
-              errorMessages.add(
-                '${field.toString().replaceAll('_', ' ')}: $errors',
-              );
-            }
-          });
-
-          // Join all error messages
-          final errorMessage = errorMessages.join('\n');
-
-          setState(() {
-            _errorMessage = errorMessage;
-          });
+        if (responseStatus == 200) {
+          if (!mounted) return;
+          await _showMessageDialog(
+            'Success',
+            'OTP has been resent to your phone number.',
+          );
+          _startResendTimer();
+        } else if (responseStatus == 403) {
+          if (!mounted) return;
+          await _showMessageDialog(
+            'Error',
+            'Please wait for 30 seconds before requesting new OTP.',
+          );
         } else {
-          // Fallback to generic error message
-          setState(() {
-            _errorMessage =
-                responseData['message'] ??
-                'Failed to resend OTP. Please try again.';
-          });
+          if (!mounted) return;
+          await _showMessageDialog(
+            'Error',
+            responseData['message'] ??
+                'Failed to resend OTP. Please try again.',
+          );
+          _navigateToLogin();
         }
+      } catch (e) {
+        print('\n=== JSON Parsing Error ===');
+        print('Error parsing response: $e');
+        print('Raw response that failed to parse: ${response.body}');
+        print('=========================\n');
+
+        if (!mounted) return;
+        await _showMessageDialog(
+          'Error',
+          'Server response error. Please try again later.',
+        );
       }
     } catch (e) {
+      print('\n=== Network/Other Error ===');
+      print('Error during resend OTP: $e');
+      print('=========================\n');
+
       setState(() {
         _isLoading = false;
-        _errorMessage = 'An error occurred. Please try again.';
       });
+
+      if (!mounted) return;
+      await _showMessageDialog(
+        'Error',
+        'Network error occurred. Please check your connection and try again.',
+      );
     }
+  }
+
+  // Function to show success dialog
+  Future<void> _showSuccessDialog() async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Success'),
+          content: const Text('OTP verified successfully.'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('OK'),
+              onPressed: () {
+                Navigator.of(context).pop();
+                _navigateToLogin();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Function to show message dialog
+  Future<void> _showMessageDialog(String title, String message) async {
+    await showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('OK'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Function to navigate to login screen
+  void _navigateToLogin() {
+    Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
+  }
+
+  // Function to start resend timer
+  void _startResendTimer() {
+    setState(() {
+      _canResendOTP = false;
+      _resendTimer = 30;
+    });
+
+    Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        if (_resendTimer > 0) {
+          _resendTimer--;
+        } else {
+          _canResendOTP = true;
+          timer.cancel();
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _otpController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final isSmallScreen = screenSize.height < 600;
-    final otpBoxSize = isSmallScreen ? 40.0 : 45.0;
+    final viewInsets = MediaQuery.of(context).viewInsets;
 
     return Scaffold(
-      // Allow screen to resize with keyboard for better visibility
       resizeToAvoidBottomInset: true,
-      appBar: AppBar(title: const Text('OTP Verification')),
       body: SafeArea(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: EdgeInsets.all(isSmallScreen ? 16.0 : 24.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Verify Your Phone',
-                  style: TextStyle(
-                    fontSize: isSmallScreen ? 20 : 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: isSmallScreen ? 12 : 16),
-                Text(
-                  'We have sent a verification code to ${widget.phoneNumber}',
-                  style: TextStyle(
-                    fontSize: isSmallScreen ? 14 : 16,
-                    color: Colors.grey,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: isSmallScreen ? 30 : 40),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: List.generate(
-                    6,
-                    (index) => SizedBox(
-                      width: otpBoxSize,
-                      child: TextField(
-                        controller: _otpControllers[index],
-                        focusNode: _focusNodes[index],
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        maxLength: 1,
+        child: Center(
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 24.0),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 450),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'OTP Verification',
                         style: TextStyle(
-                          fontSize: isSmallScreen ? 18 : 20,
+                          fontSize: isSmallScreen ? 24 : 28,
                           fontWeight: FontWeight.bold,
                         ),
-                        decoration: InputDecoration(
-                          counterText: '',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        onChanged: (value) => _onOtpDigitChanged(index, value),
+                        textAlign: TextAlign.center,
                       ),
-                    ),
+
+                      SizedBox(height: isSmallScreen ? 16 : 24),
+
+                      Text(
+                        'Enter the OTP sent to ${widget.phoneNumber}',
+                        style: TextStyle(fontSize: isSmallScreen ? 14 : 16),
+                        textAlign: TextAlign.center,
+                      ),
+
+                      SizedBox(height: isSmallScreen ? 24 : 32),
+
+                      // OTP Input Field
+                      TextFormField(
+                        controller: _otpController,
+                        decoration: const InputDecoration(
+                          labelText: 'Enter OTP',
+                          prefixIcon: Icon(Icons.lock),
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                        validator: ValidationBuilder()
+                            .required('OTP is required')
+                            .minLength(6, 'OTP must be 6 digits')
+                            .maxLength(6, 'OTP must be 6 digits')
+                            .build(),
+                      ),
+
+                      SizedBox(height: isSmallScreen ? 16 : 24),
+
+                      // Verify Button
+                      _isLoading
+                          ? const Center(child: CircularProgressIndicator())
+                          : ElevatedButton(
+                              onPressed: _verifyOtp,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                                padding: EdgeInsets.symmetric(
+                                  vertical: isSmallScreen ? 12 : 16,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              child: Text(
+                                'Verify OTP',
+                                style: TextStyle(
+                                  fontSize: isSmallScreen ? 14 : 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+
+                      SizedBox(height: isSmallScreen ? 16 : 24),
+
+                      // Resend OTP Link with Timer
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            "Didn't receive the code?",
+                            style: TextStyle(fontSize: isSmallScreen ? 12 : 14),
+                          ),
+                          TextButton(
+                            onPressed: _canResendOTP ? _resendOtp : null,
+                            child: Text(
+                              _canResendOTP
+                                  ? 'Resend'
+                                  : 'Resend (${_resendTimer}s)',
+                              style: TextStyle(fontSize: isSmallScreen ? 12 : 14),
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      SizedBox(height: 20),
+                    ],
                   ),
                 ),
-                SizedBox(height: isSmallScreen ? 12 : 16),
-                if (_errorMessage != null)
-                  Padding(
-                    padding: EdgeInsets.only(bottom: isSmallScreen ? 12 : 16),
-                    child: Text(
-                      _errorMessage!,
-                      style: TextStyle(
-                        color: Colors.red,
-                        fontSize: isSmallScreen ? 12 : 14,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                SizedBox(height: isSmallScreen ? 16 : 24),
-                _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : ElevatedButton(
-                        onPressed: _verifyOtp,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue,
-                          foregroundColor: Colors.white,
-                          padding: EdgeInsets.symmetric(
-                            vertical: isSmallScreen ? 12 : 16,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        child: Text(
-                          'Verify OTP',
-                          style: TextStyle(
-                            fontSize: isSmallScreen ? 14 : 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                SizedBox(height: isSmallScreen ? 16 : 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      "Didn't receive the code?",
-                      style: TextStyle(fontSize: isSmallScreen ? 12 : 14),
-                    ),
-                    TextButton(
-                      onPressed: _resendOtp,
-                      child: Text(
-                        'Resend',
-                        style: TextStyle(fontSize: isSmallScreen ? 12 : 14),
-                      ),
-                    ),
-                  ],
-                ),
-                // Add extra padding at the bottom
-                SizedBox(height: 20),
-              ],
+              ),
             ),
           ),
         ),

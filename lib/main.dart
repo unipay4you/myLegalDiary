@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:responsive_framework/responsive_framework.dart';
+import 'screens/login_screen.dart';
 import 'screens/register_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/otp_verification_screen.dart';
 import 'utils/app_theme.dart';
 
 void main() {
@@ -31,10 +33,33 @@ class MyApp extends StatelessWidget {
             ],
           ),
       initialRoute: '/',
+      onGenerateRoute: (settings) {
+        if (settings.name == '/otp') {
+          final phoneNumber = settings.arguments as String;
+          return MaterialPageRoute(
+            builder:
+                (context) => OTPVerificationScreen(
+                  phoneNumber: phoneNumber,
+                  source:
+                      'login', // Default to login source for backward compatibility
+                ),
+          );
+        }
+        return null;
+      },
       routes: {
-        '/': (context) => const RegisterScreen(),
+        '/': (context) => const LoginScreen(),
+        '/register': (context) => const RegisterScreen(),
         '/home': (context) => const HomeScreen(),
-        // We can't directly add OTPVerificationScreen to routes because it requires parameters
+        '/otp-verification': (context) {
+          final args =
+              ModalRoute.of(context)!.settings.arguments
+                  as Map<String, dynamic>;
+          return OTPVerificationScreen(
+            phoneNumber: args['phoneNumber'],
+            source: args['source'],
+          );
+        },
       },
     );
   }
