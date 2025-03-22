@@ -3,6 +3,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
 import 'profile_screen.dart';
 import 'package:flutter_carousel_widget/flutter_carousel_widget.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'otp_verification_screen.dart';
+import 'edit_profile_screen.dart';
+import '../config/app_config.dart';
+import 'email_verification_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -49,7 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
       'count': 100,
     },
     {
-      'title': 'Today Cases',
+      'title': 'Total Cases',
       'description': '100 Cases',
       'color': Colors.orange[100],
       'icon': Icons.today,
@@ -72,12 +78,163 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadUserData() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _userName = prefs.getString('user_name') ?? 'User';
-      _userPhone = prefs.getString('user_phone') ?? 'Phone';
-      _profilePicUrl = prefs.getString('profile_pic_url');
-    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final accessToken = prefs.getString('access_token');
+
+      if (accessToken == null) {
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginScreen()),
+          );
+        }
+        return;
+      }
+
+      // Print request details
+      print('\n============= API Request Details =============');
+      print('URL: ${AppConfig.apiBaseUrl}/user');
+      print('Method: POST');
+      print('Headers: {');
+      print('  Authorization: Bearer $accessToken');
+      print('  Content-Type: application/json');
+      print('}');
+      print('Body: {}');
+      print('=============================================\n');
+
+      // Call user API endpoint with POST method
+      final response = await http.post(
+        Uri.parse('${AppConfig.apiBaseUrl}/user'),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({}), // Empty body for POST request
+      );
+
+      // Print response details
+      print('\n============= API Response Details =============');
+      print('Status Code: ${response.statusCode}');
+      print('Headers: {');
+      response.headers.forEach((key, value) {
+        print('  $key: $value');
+      });
+      print('}');
+      print('Body: ${response.body}');
+      print('==============================================\n');
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+
+        // Print parsed response data
+        print('\n============= Parsed Response Data =============');
+        print('Raw Response: $responseData');
+        print('==============================================\n');
+
+        // Extract user data from nested structure
+        final userDataList = responseData['data']['userData'] as List;
+        if (userDataList.isNotEmpty) {
+          final userData = userDataList[0]; // Get first user from the list
+
+          // Print user data details
+          print('\n============= User Data Details =============');
+          print('ID: ${userData['id']}');
+          print('Name: ${userData['user_name']}');
+          print('Phone: ${userData['phone_number']}');
+          print('Email: ${userData['email']}');
+          print('User Type: ${userData['user_type']}');
+          print('Profile Image: ${userData['user_profile_image']}');
+          print('Phone Verified: ${userData['is_phone_number_verified']}');
+          print('Email Verified: ${userData['is_email_verified']}');
+          print('First Login: ${userData['is_first_login']}');
+          print('==============================================\n');
+
+          // Check verification status
+          if (userData['is_phone_number_verified'] == false) {
+            if (mounted) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder:
+                      (context) => OTPVerificationScreen(
+                        phoneNumber: userData['phone_number']?.toString() ?? '',
+                        source: 'login',
+                      ),
+                ),
+              );
+            }
+            return;
+          }
+
+          if (userData['is_email_verified'] == false) {
+            if (mounted) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => EmailVerificationScreen(
+                    email: userData['email'] ?? '',
+                    accessToken: accessToken,
+                  ),
+                ),
+              );
+            }
+            return;
+          }
+
+          if (userData['is_first_login'] == true) {
+            if (mounted) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const EditProfileScreen(),
+                ),
+              );
+            }
+            return;
+          }
+
+          // Update user data in SharedPreferences
+          await prefs.setString('user_name', userData['user_name'] ?? 'User');
+          await prefs.setString(
+            'user_phone',
+            userData['phone_number']?.toString() ?? 'Phone',
+          );
+          await prefs.setString(
+            'profile_pic_url',
+            userData['user_profile_image'],
+          );
+
+          setState(() {
+            _userName = userData['user_name'] ?? 'User';
+            _userPhone = userData['phone_number']?.toString() ?? 'Phone';
+            _profilePicUrl = userData['user_profile_image'];
+            _isLoading = false;
+          });
+        } else {
+          throw Exception('No user data found in response');
+        }
+      } else if (response.statusCode == 401) {
+        // Token expired or invalid
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginScreen()),
+          );
+        }
+      } else {
+        throw Exception('Failed to load user data');
+      }
+    } catch (e) {
+      print('Error loading user data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to load user data. Please try again.'),
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _checkLoginStatus() async {
@@ -97,15 +254,27 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('access_token');
-    await prefs.remove('refresh_token');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear(); // Clear all saved data
 
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-      );
+      if (mounted) {
+        // Navigate to login screen and remove all previous routes
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+          (Route<dynamic> route) => false,
+        );
+      }
+    } catch (e) {
+      print('Error during logout: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error during logout. Please try again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -173,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: EdgeInsets.zero,
           children: [
             DrawerHeader(
-              decoration: BoxDecoration(color: Colors.blue),
+              decoration: const BoxDecoration(color: Colors.blue),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.end,
@@ -236,9 +405,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ListTile(
               leading: const Icon(Icons.logout),
               title: const Text('Logout'),
-              onTap: () {
+              onTap: () async {
                 Navigator.pop(context); // Close drawer
-                _logout();
+                await _logout(); // Wait for logout to complete
               },
             ),
           ],

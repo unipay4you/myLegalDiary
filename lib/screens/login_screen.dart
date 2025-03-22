@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import 'home_screen.dart';
 import 'register_screen.dart';
+import 'dart:async';
+import 'dart:io';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -53,157 +55,131 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
     });
 
     try {
-      final requestBody = {
-        'phone_number': _phoneController.text,
-        'password': _passwordController.text,
-      };
+      final response = await http
+          .post(
+            Uri.parse('${AppConfig.apiBaseUrl}${AppConfig.loginEndpoint}'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'phone_number': _phoneController.text,
+              'password': _passwordController.text,
+            }),
+          )
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () {
+              throw TimeoutException(AppConfig.timeoutError);
+            },
+          );
 
-      // Print request details for debugging
-      print('\n=== Login Request Details ===');
-      print('Request URL: $apiBaseUrl/login');
-      print('Request Body: ${jsonEncode(requestBody)}');
-      print('===========================\n');
+      if (AppConfig.isDevelopment) {
+        print('=== Development Mode API Call ===');
+        print('URL: ${AppConfig.apiBaseUrl}${AppConfig.loginEndpoint}');
+        print('Response Status Code: ${response.statusCode}');
+        print('Response Body: ${response.body}');
+        print('Response Headers: ${response.headers}');
+        print('==============================');
+      }
 
-      final response = await http.post(
-        Uri.parse('$apiBaseUrl/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(requestBody),
-      );
-
-      // Print response details for debugging
-      print('\n=== Login Response Details ===');
-      print('Response Status Code: ${response.statusCode}');
-      print('Response Body: ${response.body}');
-      print('===========================\n');
-
-      setState(() {
-        _isLoading = false;
-      });
-
-      try {
+      if (response.statusCode == 200) {
         final responseData = jsonDecode(response.body);
-        print('\n=== Parsed Response Data ===');
-        print('Response Data: $responseData');
-        print('=========================\n');
+        final prefs = await SharedPreferences.getInstance();
 
-        // Get status from response data or fallback to HTTP status code
-        final responseStatus =
-            responseData['status'] as int? ?? response.statusCode;
-
-        if (responseStatus == 200) {
-          // Store tokens only if they exist in the response data
-          final prefs = await SharedPreferences.getInstance();
-
-          // Get tokens from responseData['data']
-          final data = responseData['data'] as Map<String, dynamic>?;
-          if (data != null) {
-            if (data['access_token'] != null) {
-              await prefs.setString('access_token', data['access_token']);
-            }
-            if (data['refresh_token'] != null) {
-              await prefs.setString('refresh_token', data['refresh_token']);
-            }
-          }
-
-          if (!mounted) return;
-          // Navigate to OTP verification screen
-          Navigator.pushNamed(
-            context,
-            '/otp-verification',
-            arguments: {
-              'phoneNumber': _phoneController.text,
-              'source': 'login',
-            },
-          );
-        } else {
-          // Show error dialog with message from response
-          if (!mounted) return;
-          await showDialog(
-            context: context,
-            builder: (BuildContext context) {
-              return AlertDialog(
-                title: const Text('Login Failed'),
-                content: Text(
-                  responseData['message'] ?? 'Login failed. Please try again.',
-                ),
-                actions: <Widget>[
-                  TextButton(
-                    child: const Text('OK'),
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      // Clear only password field
-                      _passwordController.clear();
-                    },
-                  ),
-                ],
-              );
-            },
-          );
+        // Check if response data exists and has required fields
+        if (responseData == null || responseData['data'] == null) {
+          throw Exception('Invalid response format from server');
         }
-      } catch (e) {
-        print('\n=== JSON Parsing Error ===');
-        print('Error parsing response: $e');
-        print('Raw response that failed to parse: ${response.body}');
-        print('=========================\n');
+
+        final data = responseData['data'] as Map<String, dynamic>;
+
+        // Store user data with null checks
+        if (data['access_token'] != null) {
+          await prefs.setString('access_token', data['access_token']);
+        } else {
+          throw Exception('Access token not found in response');
+        }
+
+        // Store optional user data with null checks
+        await prefs.setString('user_name', data['user_name'] ?? '');
+        await prefs.setString('user_phone', data['phone_number'] ?? '');
+        await prefs.setString('user_email', data['email'] ?? '');
+
+        if (data['profile_pic_url'] != null) {
+          await prefs.setString('profile_pic_url', data['profile_pic_url']);
+        }
+
+        if (AppConfig.isDevelopment) {
+          print('=== Response Data Structure ===');
+          print('Response Data Type: ${responseData.runtimeType}');
+          print('Response Data Keys: ${responseData.keys.toList()}');
+          print('Response Data: $responseData');
+          print('=============================');
+        }
 
         if (!mounted) return;
-        await showDialog(
-          context: context,
-          builder: (BuildContext context) {
-            return AlertDialog(
-              title: const Text('Error'),
-              content: const Text(
-                'Server response error. Please try again later.',
-              ),
-              actions: <Widget>[
-                TextButton(
-                  child: const Text('OK'),
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                    // Clear only password field
-                    _passwordController.clear();
-                  },
-                ),
-              ],
-            );
-          },
-        );
+        Navigator.pushReplacementNamed(context, '/home');
+      } else {
+        final errorBody = jsonDecode(response.body);
+        final errorMessage = errorBody['message'] ?? AppConfig.unknownError;
+        throw Exception(errorMessage);
       }
+    } on TimeoutException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppConfig.timeoutError),
+          backgroundColor: Colors.red,
+          action: SnackBarAction(
+            label: 'Retry',
+            textColor: Colors.white,
+            onPressed: _login,
+          ),
+        ),
+      );
+    } on SocketException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppConfig.connectionError),
+          backgroundColor: Colors.red,
+          action: SnackBarAction(
+            label: 'Retry',
+            textColor: Colors.white,
+            onPressed: _login,
+          ),
+        ),
+      );
     } catch (e) {
-      print('\n=== Network/Other Error ===');
-      print('Error during login: $e');
-      print('=========================\n');
-
-      setState(() {
-        _isLoading = false;
-      });
+      if (AppConfig.isDevelopment) {
+        print('=== Development Mode Error ===');
+        print('Error during login: $e');
+        print('===========================');
+      }
 
       if (!mounted) return;
-      await showDialog(
-        context: context,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: const Text('Error'),
-            content: const Text(
-              'Network error occurred. Please check your connection and try again.',
-            ),
-            actions: <Widget>[
-              TextButton(
-                child: const Text('OK'),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  // Clear only password field
-                  _passwordController.clear();
-                },
-              ),
-            ],
-          );
-        },
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            AppConfig.isDevelopment
+                ? 'Development Error: ${e.toString()}'
+                : AppConfig.unknownError,
+          ),
+          backgroundColor: Colors.red,
+          action: SnackBarAction(
+            label: 'Retry',
+            textColor: Colors.white,
+            onPressed: _login,
+          ),
+        ),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -226,7 +202,7 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Center(
           child: SingleChildScrollView(
             child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 24.0),
+              padding: const EdgeInsets.symmetric(horizontal: 24.0),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 450),
                 child: Form(
@@ -354,7 +330,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ],
                       ),
 
-                      SizedBox(height: 20),
+                      const SizedBox(height: 20),
                     ],
                   ),
                 ),

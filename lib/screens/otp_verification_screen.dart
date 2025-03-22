@@ -374,7 +374,7 @@ class _OTPVerificationScreenState extends State<OTPVerificationScreen> {
         child: Center(
           child: SingleChildScrollView(
             child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 24.0),
+              padding: const EdgeInsets.symmetric(horizontal: 24.0),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 450),
                 child: Form(
@@ -466,7 +466,7 @@ class _OTPVerificationScreenState extends State<OTPVerificationScreen> {
                         ],
                       ),
 
-                      SizedBox(height: 20),
+                      const SizedBox(height: 20),
                     ],
                   ),
                 ),

@@ -296,7 +296,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         child: Center(
           child: SingleChildScrollView(
             child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 24.0),
+              padding: const EdgeInsets.symmetric(horizontal: 24.0),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 450),
                 child: Form(
@@ -473,12 +473,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                     color: Colors.grey[600],
                                     fontSize: isSmallScreen ? 12 : 14,
                                   ),
-                                  children: [
-                                    const TextSpan(text: 'I accept the '),
+                                  children: const [
+                                    TextSpan(text: 'I accept the '),
                                     TextSpan(
                                       text: 'Terms and Conditions',
                                       style: TextStyle(
-                                        color: const Color(0xFF1A237E),
+                                        color: Color(0xFF1A237E),
                                         decoration: TextDecoration.underline,
                                       ),
                                     ),
@@ -538,7 +538,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
 
                       // Add extra padding at the bottom to ensure everything is visible
-                      SizedBox(height: 20),
+                      const SizedBox(height: 20),
                     ],
                   ),
                 ),

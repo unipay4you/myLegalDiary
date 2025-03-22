@@ -6,9 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import 'home_screen.dart';
+import 'login_screen.dart';
 
 class EditProfileScreen extends StatefulWidget {
-  const EditProfileScreen({super.key});
+  const EditProfileScreen({Key? key}) : super(key: key);
 
   @override
   State<EditProfileScreen> createState() => _EditProfileScreenState();
@@ -16,75 +18,231 @@ class EditProfileScreen extends StatefulWidget {
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _dobController = TextEditingController();
-  final _mobileController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _barRegController = TextEditingController();
-  final _address1Controller = TextEditingController();
-  final _address2Controller = TextEditingController();
-  final _address3Controller = TextEditingController();
-  final _pinController = TextEditingController();
+  bool _isLoading = true;
+  String? _userId; // Store user ID for profile updates
+
+  // Form controllers
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _dobController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _barRegController = TextEditingController();
+  final TextEditingController _address1Controller = TextEditingController();
+  final TextEditingController _address2Controller = TextEditingController();
+  final TextEditingController _address3Controller = TextEditingController();
+  final TextEditingController _pinController = TextEditingController();
 
   File? _profileImage;
   String? _existingProfileUrl;
-  bool _isLoading = true;
   String? _selectedState;
   String? _selectedDistrict;
-  List<String> _states = [
-    'Rajasthan',
-    'Delhi',
-    'Maharashtra',
-    'Gujarat',
-  ]; // Add more states
-  Map<String, List<String>> _districts = {
-    'Rajasthan': ['Jaipur', 'Jodhpur', 'Udaipur', 'Kota'],
-    'Delhi': ['Central Delhi', 'East Delhi', 'New Delhi', 'North Delhi'],
-    'Maharashtra': ['Mumbai', 'Pune', 'Nagpur', 'Thane'],
-    'Gujarat': ['Ahmedabad', 'Surat', 'Vadodara', 'Rajkot'],
-  }; // Add more districts
+  List<String> _states =
+      []; // Changed to empty list, will be populated from API
+  Map<String, List<String>> _districts =
+      {}; // Changed to empty map, will be populated from API
+  Map<String, String> _stateIds = {}; // Map of state name to state ID
+  Map<String, String> _districtIds = {}; // Map of district name to district ID
+  String? _selectedStateId; // Store selected state ID
+  String? _selectedDistrictId; // Store selected district ID
 
   @override
   void initState() {
     super.initState();
+    _fetchDistrictData();
     _loadUserData();
   }
 
-  Future<void> _loadUserData() async {
-    setState(() {
-      _isLoading = true;
-    });
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _dobController.dispose();
+    _phoneController.dispose();
+    _emailController.dispose();
+    _barRegController.dispose();
+    _address1Controller.dispose();
+    _address2Controller.dispose();
+    _address3Controller.dispose();
+    _pinController.dispose();
+    super.dispose();
+  }
 
+  Future<void> _fetchDistrictData() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final response = await http.get(
+        Uri.parse('${AppConfig.apiBaseUrl}/getdistrict'),
+      );
 
-      // Load existing data
-      _nameController.text = prefs.getString('user_name') ?? '';
-      _mobileController.text = prefs.getString('user_phone') ?? '';
-      _emailController.text = prefs.getString('user_email') ?? '';
-      _existingProfileUrl = prefs.getString('profile_pic_url');
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
 
-      // Load other saved data if available
-      _dobController.text = prefs.getString('user_dob') ?? '';
-      _barRegController.text = prefs.getString('bar_reg_number') ?? '';
-      _address1Controller.text = prefs.getString('address1') ?? '';
-      _address2Controller.text = prefs.getString('address2') ?? '';
-      _address3Controller.text = prefs.getString('address3') ?? '';
-      _selectedState = prefs.getString('state');
-      _selectedDistrict = prefs.getString('district');
-      _pinController.text = prefs.getString('pin') ?? '';
+        if (responseData['status'] == 200 && responseData['payload'] != null) {
+          final districtList = responseData['payload'] as List;
+
+          final Map<String, List<String>> tempDistricts = {};
+          final Map<String, String> tempStateNames = {};
+          final Map<String, String> tempStateIds = {};
+          final Map<String, String> tempDistrictIds = {};
+
+          // First, extract all unique states
+          for (var item in districtList) {
+            final stateData = item['state'] as Map<String, dynamic>;
+            final String stateId = stateData['id'].toString();
+            final String stateName = stateData['state'] ?? '';
+
+            if (stateName.isNotEmpty) {
+              tempStateNames[stateId] = stateName;
+              tempStateIds[stateName] = stateId;
+            }
+          }
+
+          // Then organize districts by state
+          for (var item in districtList) {
+            final String districtId = item['id'].toString();
+            final String districtName = item['district'] ?? '';
+            final stateData = item['state'] as Map<String, dynamic>;
+            final String stateId = stateData['id'].toString();
+            final String stateName = tempStateNames[stateId] ?? '';
+
+            if (stateName.isNotEmpty && districtName.isNotEmpty) {
+              if (!tempDistricts.containsKey(stateName)) {
+                tempDistricts[stateName] = [];
+              }
+              if (!tempDistricts[stateName]!.contains(districtName)) {
+                tempDistricts[stateName]!.add(districtName);
+                tempDistrictIds[districtName] = districtId;
+              }
+            }
+          }
+
+          setState(() {
+            _states = tempStateNames.values.toList()..sort();
+            _districts = tempDistricts;
+            _stateIds = tempStateIds;
+            _districtIds = tempDistrictIds;
+
+            _districts.forEach((state, districts) {
+              districts.sort();
+            });
+          });
+        }
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to load user data')),
+          const SnackBar(
+            content: Text('Failed to load district data. Please try again.'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+    }
+  }
+
+  Future<void> _loadUserData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final accessToken = prefs.getString('access_token');
+
+      if (accessToken == null) {
+        throw Exception('No access token found');
       }
+
+      final response = await http.post(
+        Uri.parse('${AppConfig.apiBaseUrl}/user'),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({}),
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        final userDataList = responseData['data']['userData'] as List;
+
+        if (userDataList.isNotEmpty) {
+          final userData = userDataList[0];
+
+          print('\n============= User Profile Data =============');
+          print('User Profile Image: ${userData['user_profile_image']}');
+          print('============================================\n');
+
+          setState(() {
+            _userId = userData['id']?.toString();
+            _nameController.text = userData['user_name'] ?? '';
+            _dobController.text = userData['user_dob'] ?? '';
+            _phoneController.text = userData['phone_number']?.toString() ?? '';
+            _emailController.text = userData['email'] ?? '';
+
+            final barRegNumber = userData['advocate_registration_number'];
+            _barRegController.text =
+                (barRegNumber == null || barRegNumber == 'None')
+                    ? ''
+                    : barRegNumber.toString();
+
+            // Handle address fields
+            final address1 = userData['user_address1'];
+            final address2 = userData['user_address2'];
+            final address3 = userData['user_address3'];
+
+            _address1Controller.text =
+                (address1 == null || address1 == 'None')
+                    ? ''
+                    : address1.toString();
+            _address2Controller.text =
+                (address2 == null || address2 == 'None')
+                    ? ''
+                    : address2.toString();
+            _address3Controller.text =
+                (address3 == null || address3 == 'None')
+                    ? ''
+                    : address3.toString();
+
+            _pinController.text =
+                userData['user_district_pincode']?.toString() ?? '';
+
+            // Handle state and district from nested JSON
+            final userState = userData['user_state'];
+            final userDistrict = userData['user_district'];
+
+            if (userState != null && userState is Map<String, dynamic>) {
+              _selectedStateId = userState['id']?.toString() ?? '';
+              _selectedState = userState['state']?.toString() ?? '';
+            }
+
+            if (userDistrict != null && userDistrict is Map<String, dynamic>) {
+              _selectedDistrictId = userDistrict['id']?.toString() ?? '';
+              _selectedDistrict = userDistrict['district']?.toString() ?? '';
+            }
+
+            // Set profile image URL by combining base URL with profile image path
+            final profileImagePath = userData['user_profile_image'];
+            if (profileImagePath != null && profileImagePath != 'None') {
+              final baseUrl =
+                  AppConfig.apiBaseUrl.split(
+                    '/api',
+                  )[0]; // Get the host URL part
+              _existingProfileUrl = '$baseUrl$profileImagePath';
+              print('Full Profile Image URL: $_existingProfileUrl');
+            }
+            _isLoading = false;
+          });
+        }
+      } else {
+        throw Exception('Failed to load user data');
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to load user data. Please try again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -148,8 +306,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       // Add text fields
       request.fields.addAll({
+        'id': _userId ?? '',
         'name': _nameController.text,
-        'dob': _dobController.text,
+        'user_dob': _dobController.text,
         'email': _emailController.text,
         'bar_registration_number': _barRegController.text,
         'address1': _address1Controller.text,
@@ -157,7 +316,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         'address3': _address3Controller.text,
         'state': _selectedState ?? '',
         'district': _selectedDistrict ?? '',
-        'pin': _pinController.text,
+        'state_id': _selectedStateId ?? '',
+        'district_id': _selectedDistrictId ?? '',
+        'user_district_pincode': _pinController.text,
       });
 
       // Add profile image if selected
@@ -196,10 +357,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         }
 
         if (!mounted) return;
-        Navigator.pop(
+        Navigator.pushReplacement(
           context,
-          true,
-        ); // Return true to indicate successful update
+          MaterialPageRoute(builder: (context) => const HomeScreen()),
+        );
       } else {
         throw Exception('Failed to update profile');
       }
@@ -223,6 +384,29 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
+  Future<void> _logout() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear(); // Clear all stored preferences
+
+      if (!mounted) return;
+
+      // Navigate to login screen and clear all previous routes
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        (route) => false,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to logout. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -230,7 +414,41 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Edit Profile')),
+      appBar: AppBar(
+        title: const Text('Edit Profile'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (BuildContext context) {
+                  return AlertDialog(
+                    title: const Text('Confirm Logout'),
+                    content: const Text('Are you sure you want to logout?'),
+                    actions: [
+                      TextButton(
+                        child: const Text('Cancel'),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                      TextButton(
+                        child: const Text(
+                          'Logout',
+                          style: TextStyle(color: Colors.red),
+                        ),
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _logout();
+                        },
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+        ],
+      ),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
@@ -331,12 +549,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const SizedBox(height: 16),
 
                 TextFormField(
-                  controller: _mobileController,
+                  controller: _phoneController,
                   decoration: const InputDecoration(
                     labelText: 'Mobile Number',
                     border: OutlineInputBorder(),
                   ),
-                  enabled: false,
+                  keyboardType: TextInputType.phone,
                 ),
                 const SizedBox(height: 16),
 
@@ -416,6 +634,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
+                // State dropdown with pre-selected value
                 DropdownButtonFormField<String>(
                   value: _selectedState,
                   decoration: const InputDecoration(
@@ -432,8 +651,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   onChanged: (String? newValue) {
                     setState(() {
                       _selectedState = newValue;
-                      _selectedDistrict =
-                          null; // Reset district when state changes
+                      _selectedDistrict = null;
+                      _selectedStateId =
+                          newValue != null ? _stateIds[newValue] : null;
                     });
                   },
                   validator: (value) {
@@ -445,6 +665,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
+                // District dropdown with pre-selected value
                 DropdownButtonFormField<String>(
                   value: _selectedDistrict,
                   decoration: const InputDecoration(
@@ -452,8 +673,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     border: OutlineInputBorder(),
                   ),
                   items:
-                      _selectedState != null
-                          ? _districts[_selectedState]?.map((String district) {
+                      (_selectedState != null &&
+                              _districts.containsKey(_selectedState))
+                          ? _districts[_selectedState]!.map((String district) {
                             return DropdownMenuItem<String>(
                               value: district,
                               child: Text(district),
@@ -463,6 +685,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   onChanged: (String? newValue) {
                     setState(() {
                       _selectedDistrict = newValue;
+                      _selectedDistrictId =
+                          newValue != null ? _districtIds[newValue] : null;
                     });
                   },
                   validator: (value) {
@@ -515,19 +739,5 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _dobController.dispose();
-    _mobileController.dispose();
-    _emailController.dispose();
-    _barRegController.dispose();
-    _address1Controller.dispose();
-    _address2Controller.dispose();
-    _address3Controller.dispose();
-    _pinController.dispose();
-    super.dispose();
   }
 }
